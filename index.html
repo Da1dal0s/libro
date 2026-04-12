@@ -99,12 +99,19 @@
   .book-actions {
     display: flex; gap: 0.4rem; margin-left: 0.5rem; flex-shrink: 0;
   }
-  .del-btn {
+  .del-btn, .rename-btn {
     font-family: var(--font-ui); font-size: 0.65rem; color: var(--text-light);
     background: none; border: 1px solid var(--border); border-radius: 6px;
     padding: 0.25rem 0.5rem; cursor: pointer;
   }
   .del-btn:active { color: #c33; border-color: #c33; }
+
+  .rename-input {
+    font-family: var(--font-ui); font-size: 0.88rem; font-weight: 600;
+    border: 1px solid var(--accent); border-radius: 4px;
+    background: var(--bg); color: var(--text);
+    padding: 0.1rem 0.3rem; width: 100%; outline: none;
+  }
 
   .empty-lib {
     text-align: center; padding: 4rem 2rem; color: var(--text-light);
@@ -283,13 +290,13 @@
     <h1>Libro</h1>
     <label class="add-btn">
       + Add Book
-      <input type="file" id="file-input" accept=".epub" multiple>
+      <input type="file" id="file-input" accept=".epub,.docx" multiple>
     </label>
   </div>
   <div id="book-grid"></div>
   <div id="empty-state" class="empty-lib">
     <div class="icon">📚</div>
-    <p>Your library is empty.<br>Add an ePub to get started.</p>
+    <p>Your library is empty.<br>Add an ePub or DOCX to get started.</p>
     <p style="margin-top:1rem;font-size:0.7rem;">Once open, use Safari's <strong>Listen to Page</strong><br>or <strong>Speak Screen</strong> (two-finger swipe down) to listen.</p>
   </div>
   <div id="loading-msg"><span class="spinner"></span>Unpacking book…</div>
@@ -535,6 +542,75 @@ async function parseEpub(file) {
 }
 
 // ═══════════════════════════════════════════════════
+// DOCX parser
+// ═══════════════════════════════════════════════════
+async function parseDocx(file) {
+  const zip = await JSZip.loadAsync(file);
+  const P = new DOMParser();
+  const NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+
+  // Metadata from docProps/core.xml
+  let title = file.name.replace(/\.docx$/i, '');
+  let author = '';
+  const coreXml = await zip.file('docProps/core.xml')?.async('text');
+  if (coreXml) {
+    const core = P.parseFromString(coreXml, 'application/xml');
+    const dcNS = 'http://purl.org/dc/elements/1.1/';
+    title = core.getElementsByTagNameNS(dcNS, 'title')[0]?.textContent || title;
+    author = core.getElementsByTagNameNS(dcNS, 'creator')[0]?.textContent || '';
+  }
+
+  // Main document body — footnotes/endnotes live in separate files we never load
+  const docXml = await zip.file('word/document.xml')?.async('text');
+  if (!docXml) throw new Error('Invalid DOCX');
+  const doc = P.parseFromString(docXml, 'application/xml');
+
+  let html = '';
+  for (const p of Array.from(doc.getElementsByTagNameNS(NS, 'p'))) {
+    // Paragraph style (Heading1, Heading2, Title, …)
+    const pStyleEl = p.getElementsByTagNameNS(NS, 'pStyle')[0];
+    const pStyle = pStyleEl?.getAttributeNS(NS, 'val') || pStyleEl?.getAttribute('w:val') || '';
+
+    // Collect text from runs, skipping footnote / endnote / comment refs
+    let text = '';
+    for (const r of Array.from(p.getElementsByTagNameNS(NS, 'r'))) {
+      if (r.getElementsByTagNameNS(NS, 'footnoteReference').length) continue;
+      if (r.getElementsByTagNameNS(NS, 'endnoteReference').length) continue;
+      if (r.getElementsByTagNameNS(NS, 'commentReference').length) continue;
+      if (r.parentElement?.localName === 'del') continue; // tracked deletions
+
+      const rPr = r.getElementsByTagNameNS(NS, 'rPr')[0];
+      const bold   = !!rPr?.getElementsByTagNameNS(NS, 'b').length;
+      const italic = !!rPr?.getElementsByTagNameNS(NS, 'i').length;
+
+      let run = '';
+      for (const t of r.getElementsByTagNameNS(NS, 't')) run += t.textContent;
+      if (!run) continue;
+
+      const e = esc(run);
+      text += bold && italic ? `<strong><em>${e}</em></strong>`
+            : bold           ? `<strong>${e}</strong>`
+            : italic         ? `<em>${e}</em>`
+            :                  e;
+    }
+
+    if (!text.trim()) continue;
+
+    if (/^Heading1$/i.test(pStyle) || pStyle === 'Title')
+      html += `<h2>${text}</h2>`;
+    else if (/^Heading[2-6]$/i.test(pStyle) || pStyle === 'Subtitle')
+      html += `<h3>${text}</h3>`;
+    else
+      html += `<p>${text}</p>`;
+  }
+
+  if (!html.trim()) throw new Error('No readable content found in DOCX');
+
+  const bookId = (title + '-' + author).replace(/\W+/g, '-').toLowerCase().substring(0, 80) + '-' + Date.now().toString(36);
+  return { id: bookId, title, author, chapters: [{ href: 'document', html }], tocItems: [], addedAt: Date.now() };
+}
+
+// ═══════════════════════════════════════════════════
 // Library UI
 // ═══════════════════════════════════════════════════
 const gridEl = document.getElementById('book-grid');
@@ -567,7 +643,7 @@ async function renderLibrary() {
         <div class="meta"><span>${pct}% read</span><span>${lastRead}</span><span>${book.chapters.length} ch.</span></div>
       </div>
       ${progressSVG(pct)}
-      <div class="book-actions"><button class="del-btn" data-id="${book.id}">Remove</button></div>
+      <div class="book-actions"><button class="rename-btn">Rename</button><button class="del-btn" data-id="${book.id}">Remove</button></div>
     `;
     card.addEventListener('click', e => {
       if (e.target.closest('.del-btn')) return;
@@ -580,6 +656,29 @@ async function renderLibrary() {
         clearPos(book.id);
         renderLibrary();
       }
+    });
+    card.querySelector('.rename-btn').addEventListener('click', async e => {
+      e.stopPropagation();
+      const titleEl = card.querySelector('.title');
+      const origTitle = book.title;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = origTitle;
+      input.className = 'rename-input';
+      titleEl.replaceWith(input);
+      input.focus(); input.select();
+      let done = false;
+      async function commit() {
+        if (done) return; done = true;
+        const v = input.value.trim();
+        if (v && v !== origTitle) { book.title = v; await dbPut(book); }
+        renderLibrary();
+      }
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+        if (ev.key === 'Escape') { done = true; renderLibrary(); }
+      });
     });
     gridEl.appendChild(card);
   });
@@ -720,7 +819,7 @@ document.getElementById('file-input').addEventListener('change', async e => {
   loadingEl.classList.add('on');
   for (const f of files) {
     try {
-      const book = await parseEpub(f);
+      const book = f.name.toLowerCase().endsWith('.docx') ? await parseDocx(f) : await parseEpub(f);
       await dbPut(book);
     } catch (err) {
       alert('Error with ' + f.name + ': ' + err.message);
