@@ -280,9 +280,56 @@
     color: var(--text-light); text-align: center; padding: 2rem;
   }
   #loading-msg.on { display: block; }
+
+  /* ═══════ PASSWORD GATE ═══════ */
+  #pw-gate {
+    position: fixed; inset: 0; z-index: 9999;
+    background: var(--bg); display: flex; align-items: center; justify-content: center;
+  }
+  #pw-gate.unlocked { display: none; }
+  #pw-box {
+    width: min(22rem, 90vw); display: flex; flex-direction: column; gap: 1rem;
+  }
+  #pw-box h1 {
+    font-family: var(--font-ui); font-size: 1.5rem; font-weight: 600;
+    letter-spacing: -0.03em; text-align: center;
+  }
+  #pw-input {
+    font-family: var(--font-ui); font-size: 0.9rem;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--card-bg); color: var(--text);
+    padding: 0.65rem 0.9rem; outline: none; width: 100%;
+    transition: border-color 0.15s;
+  }
+  #pw-input:focus { border-color: var(--accent); }
+  #pw-input.wrong { border-color: #c33; animation: shake 0.3s; }
+  #pw-btn {
+    font-family: var(--font-ui); font-size: 0.82rem; font-weight: 500;
+    background: var(--accent); color: #fff; border: none; border-radius: 10px;
+    padding: 0.6rem; cursor: pointer; width: 100%;
+  }
+  #pw-err {
+    font-family: var(--font-ui); font-size: 0.75rem; color: #c33;
+    text-align: center; min-height: 1em;
+  }
+  @keyframes shake {
+    0%,100% { transform: translateX(0); }
+    25%      { transform: translateX(-6px); }
+    75%      { transform: translateX(6px); }
+  }
 </style>
 </head>
 <body>
+
+<!-- ═══════ PASSWORD GATE ═══════ -->
+<div id="pw-gate">
+  <div id="pw-box">
+    <h1>Libro</h1>
+    <input type="password" id="pw-input" placeholder="Password" autocomplete="current-password">
+    <button id="pw-btn">Enter</button>
+    <div id="pw-err"></div>
+  </div>
+</div>
 
 <!-- ═══════ LIBRARY ═══════ -->
 <div id="library-view">
@@ -870,6 +917,35 @@ window.addEventListener('scroll', () => {
   btt.classList.toggle('show', window.scrollY > 600);
 }, { passive: true });
 btt.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+
+// ═══════════════════════════════════════════════════
+// Password gate
+// ═══════════════════════════════════════════════════
+(function() {
+  const GATE = document.getElementById('pw-gate');
+  const INPUT = document.getElementById('pw-input');
+  const BTN   = document.getElementById('pw-btn');
+  const ERR   = document.getElementById('pw-err');
+
+  if (sessionStorage.getItem('libro-auth') === '1') { GATE.classList.add('unlocked'); return; }
+
+  function attempt() {
+    if (INPUT.value === 'BooksMirko') {
+      sessionStorage.setItem('libro-auth', '1');
+      GATE.classList.add('unlocked');
+    } else {
+      ERR.textContent = 'Incorrect password.';
+      INPUT.classList.add('wrong');
+      INPUT.value = '';
+      setTimeout(() => INPUT.classList.remove('wrong'), 400);
+      INPUT.focus();
+    }
+  }
+
+  BTN.addEventListener('click', attempt);
+  INPUT.addEventListener('keydown', e => { if (e.key === 'Enter') attempt(); });
+  INPUT.focus();
+})();
 
 // ═══════════════════════════════════════════════════
 // Init
